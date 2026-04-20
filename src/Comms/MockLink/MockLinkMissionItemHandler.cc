@@ -36,6 +36,9 @@ bool MockLinkMissionItemHandler::handleMavlinkMessage(const mavlink_message_t &m
     case MAVLINK_MSG_ID_MISSION_REQUEST_INT:
         _handleMissionRequest(msg);
         break;
+    case MAVLINK_MSG_ID_MISSION_ITEM:
+        _handleLegacyMissionItem(msg);
+        break;
     case MAVLINK_MSG_ID_MISSION_ITEM_INT:
         _handleMissionItem(msg);
         break;
@@ -390,6 +393,24 @@ void MockLinkMissionItemHandler::_handleMissionItem(const mavlink_message_t &msg
         }
 
         _sendAck(ack);
+    }
+}
+
+void MockLinkMissionItemHandler::_handleLegacyMissionItem(const mavlink_message_t &msg)
+{
+    mavlink_mission_item_t missionItem{};
+    mavlink_msg_mission_item_decode(&msg, &missionItem);
+
+    if (missionItem.target_system != _mockLink->vehicleId()) {
+        return;
+    }
+
+    _requestType = MAV_MISSION_TYPE_MISSION;
+
+    if (_mockLink->_handleGuidedMissionItem(missionItem)) {
+        _sendAck(MAV_MISSION_ACCEPTED);
+    } else {
+        _sendAck(MAV_MISSION_UNSUPPORTED);
     }
 }
 

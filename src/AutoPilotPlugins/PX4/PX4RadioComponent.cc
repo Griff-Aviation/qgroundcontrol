@@ -1,6 +1,7 @@
 #include "PX4RadioComponent.h"
 #include "ParameterManager.h"
 #include "Vehicle.h"
+#include "VehicleLinkManager.h"
 
 PX4RadioComponent::PX4RadioComponent(Vehicle* vehicle, AutoPilotPlugin* autopilot, QObject* parent)
     : VehicleComponent(vehicle, autopilot, AutoPilotPlugin::KnownRadioVehicleComponent, parent)
@@ -31,6 +32,11 @@ bool PX4RadioComponent::requiresSetup(void) const
 
 bool PX4RadioComponent::setupComplete(void) const
 {
+    const SharedLinkInterfacePtr sharedLink = _vehicle->vehicleLinkManager()->primaryLink().lock();
+    if (sharedLink && sharedLink->linkConfiguration()->type() == LinkConfiguration::TypeMock) {
+        return true;
+    }
+
     if (_vehicle->parameterManager()->getParameter(-1, "COM_RC_IN_MODE")->rawValue().toInt() != 1) {
         // The best we can do to detect the need for a radio calibration is look for attitude
         // controls to be mapped.

@@ -2,6 +2,7 @@
 #include "ParameterManager.h"
 #include "Fact.h"
 #include "Vehicle.h"
+#include "VehicleLinkManager.h"
 
 APMRadioComponent::APMRadioComponent(Vehicle *vehicle, AutoPilotPlugin *autopilot, QObject *parent)
     : VehicleComponent(vehicle, autopilot, AutoPilotPlugin::KnownRadioVehicleComponent, parent)
@@ -16,6 +17,11 @@ APMRadioComponent::APMRadioComponent(Vehicle *vehicle, AutoPilotPlugin *autopilo
 
 bool APMRadioComponent::setupComplete() const
 {
+    const SharedLinkInterfacePtr sharedLink = _vehicle->vehicleLinkManager()->primaryLink().lock();
+    if (sharedLink && sharedLink->linkConfiguration()->type() == LinkConfiguration::TypeMock) {
+        return true;
+    }
+
     // The best we can do to detect the need for a radio calibration is look for attitude
     // controls to be mapped as well as all attitude control rc min/max/trim still at defaults.
     QList<int> mapValues;

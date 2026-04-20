@@ -27,6 +27,8 @@ class MockLink : public LinkInterface
 {
     Q_OBJECT
 
+    friend class MockLinkMissionItemHandler;
+
 public:
     explicit MockLink(SharedLinkConfigurationPtr &config, QObject *parent = nullptr);
     virtual ~MockLink();
@@ -188,9 +190,11 @@ private:
     void _handleParamRequestRead(const mavlink_message_t &msg);
     void _handleFTP(const mavlink_message_t &msg);
     void _handleCommandLong(const mavlink_message_t &msg);
+    void _handleCommandInt(const mavlink_message_t &msg);
     void _handleInProgressCommandLong(const mavlink_command_long_t &request);
     void _handleCommandLongSetMessageInterval(const mavlink_command_long_t &request, bool &acccepted);
     void _handleManualControl(const mavlink_message_t &msg);
+    void _handleSetPositionTargetLocalNed(const mavlink_message_t &msg);
     void _handlePreFlightCalibration(const mavlink_command_long_t &request);
     void _handleTakeoff(const mavlink_command_long_t &request);
     void _handleLogRequestList(const mavlink_message_t &msg);
@@ -225,6 +229,11 @@ private:
     void _sendAvailableMode(uint8_t modeIndexOneBased);
     int  _availableModesCount() const;
     void _moveADSBVehicle(int vehicleIndex);
+    bool _handleGuidedMissionItem(const mavlink_mission_item_t &missionItem);
+    void _applyFlightModeChange(uint32_t customMode);
+    void _updateSimulatedMotion();
+    void _setTargetCoordinate(const QGeoCoordinate &coordinate, bool includeAltitude);
+    void _clearMotionTargets();
 
     static MockLink *_startMockLinkWorker(const QString &configName, MAV_AUTOPILOT firmwareType, MAV_TYPE vehicleType, bool sendStatusText, bool enableCamera, bool enableGimbal, MockConfiguration::FailureMode_t failureMode);
     static MockLink *_startMockLink(MockConfiguration *mockConfig);
@@ -244,8 +253,10 @@ private:
     const bool _enableGimbal = false;
     const MockConfiguration::FailureMode_t _failureMode = MockConfiguration::FailNone;
     const uint8_t _vehicleSystemId = 0;
-    const double _vehicleLatitude = 0.0;
-    const double _vehicleLongitude = 0.0;
+    double _homeLatitude = 0.0;
+    double _homeLongitude = 0.0;
+    double _vehicleLatitude = 0.0;
+    double _vehicleLongitude = 0.0;
     // These are just set for reporting the fields in _respondWithAutopilotVersion()
     // and ensuring that the Vehicle reports the fields in Vehicle::firmwareBoardVendorId etc.
     // They do not control any mock simulation (and it is up to the Custom build to do that).
@@ -276,6 +287,22 @@ private:
     MAV_BATTERY_CHARGE_STATE _battery2ChargeState = MAV_BATTERY_CHARGE_STATE_OK;
 
     double _vehicleAltitudeAMSL = _defaultVehicleHomeAltitude;
+    double _targetAltitudeAMSL = _defaultVehicleHomeAltitude;
+    double _velocityNorthMps = 0.0;
+    double _velocityEastMps = 0.0;
+    double _velocityDownMps = 0.0;
+    double _headingDegrees = 0.0;
+    double _guidedGroundspeedMps = 5.0;
+    QGeoCoordinate _targetCoordinate;
+    QElapsedTimer _manualControlElapsed;
+    QElapsedTimer _motionUpdateElapsed;
+    int16_t _manualControlX = 0;
+    int16_t _manualControlY = 0;
+    int16_t _manualControlZ = 500;
+    int16_t _manualControlR = 0;
+    bool _targetCoordinateActive = false;
+    bool _targetAltitudeActive = false;
+    bool _targetCoordinateIncludesAltitude = false;
     bool _commLost = false;
     bool _highLatencyTransmissionEnabled = true;
 
@@ -338,9 +365,9 @@ private:
 
     // Vehicle position is set close to default Gazebo vehicle location. This allows for multi-vehicle
     // testing of a gazebo vehicle and a mocklink vehicle
-    static constexpr double _defaultVehicleLatitude = 47.397;
-    static constexpr double _defaultVehicleLongitude = 8.5455;
-    static constexpr double _defaultVehicleHomeAltitude = 488.056;
+    static constexpr double _defaultVehicleLatitude = 62.32957270297202;
+    static constexpr double _defaultVehicleLongitude = 6.584627889570579;
+    static constexpr double _defaultVehicleHomeAltitude = 50.0;
 
     static constexpr const char *_failParam = "COM_FLTMODE6";
 

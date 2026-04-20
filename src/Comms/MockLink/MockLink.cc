@@ -18,10 +18,25 @@
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 
+#include <cmath>
 #include <cstring>
 
 QGC_LOGGING_CATEGORY(MockLinkLog, "Comms.MockLink.MockLink")
 QGC_LOGGING_CATEGORY(MockLinkVerboseLog, "Comms.MockLink.MockLink:verbose")
+
+namespace {
+constexpr uint32_t kApmCopterModeStabilize = 0;
+constexpr uint32_t kApmCopterModeAuto = 3;
+constexpr uint32_t kApmCopterModeGuided = 4;
+constexpr uint32_t kApmCopterModeLoiter = 5;
+constexpr uint32_t kApmCopterModeRtl = 6;
+constexpr uint32_t kApmCopterModeLand = 9;
+constexpr uint32_t kApmCopterModeBrake = 17;
+constexpr uint32_t kApmCopterModeSmartRtl = 21;
+
+constexpr double kRadiansToDegrees = 180.0 / 3.14159265358979323846;
+constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+}
 
 std::atomic<int> MockLink::_nextVehicleSystemId{128};
 
@@ -83,6 +98,26 @@ MockLink::MockLink(SharedLinkConfigurationPtr &config, QObject *parent)
     , _mockLinkFTP(new MockLinkFTP(_vehicleSystemId, _vehicleComponentId, this))
 {
     qCDebug(MockLinkLog) << this;
+
+    _homeLatitude = _vehicleLatitude;
+    _homeLongitude = _vehicleLongitude;
+    _targetAltitudeAMSL = _vehicleAltitudeAMSL;
+    _motionUpdateElapsed.start();
+
+    if (_firmwareType == MAV_AUTOPILOT_ARDUPILOTMEGA) {
+        switch (_vehicleType) {
+        case MAV_TYPE_QUADROTOR:
+        case MAV_TYPE_HEXAROTOR:
+        case MAV_TYPE_OCTOROTOR:
+        case MAV_TYPE_TRICOPTER:
+        case MAV_TYPE_COAXIAL:
+        case MAV_TYPE_HELICOPTER:
+            _mavCustomMode = kApmCopterModeStabilize;
+            break;
+        default:
+            break;
+        }
+    }
 
     // Initialize ADS-B vehicles with different starting conditions
     _adsbVehicles.reserve(_numberOfVehicles);
@@ -184,11 +219,12 @@ void MockLink::run1HzTasks()
     _sendVibration();
     _sendBatteryStatus();
     _sendSysStatus();
-    _sendADSBVehicles();
     if (_vehicleType != MAV_TYPE_SUBMARINE) {
         _sendRemoteIDArmStatus();
     }
-    _sendAvailableModesMonitor();
+    if (_firmwareType == MAV_AUTOPILOT_PX4) {
+        _sendAvailableModesMonitor();
+    }
 
     if (_enableGimbal) {
         _mockLinkGimbal->run1HzTasks();
@@ -209,7 +245,7 @@ void MockLink::run1HzTasks()
     } else {
         _sendHomePosition();
         // We piggy back on this delay to signal we have new standard modes available
-        if (_availableModesMonitorSeqNumber == 0) {
+        if ((_firmwareType == MAV_AUTOPILOT_PX4) && (_availableModesMonitorSeqNumber == 0)) {
             qCDebug(MockLinkLog) << "Bumping sequence number for available modes monitor to trigger requery of modes";
             _availableModesMonitorSeqNumber = 1;
         }
@@ -223,6 +259,7 @@ void MockLink::run10HzTasks()
     }
 
     if (_mavlinkStarted && _connected && mavlinkChannelIsSet()) {
+        _updateSimulatedMotion();
         _sendHeartBeat();
         if (_sendGPSPositionDelayCount > 0) {
             // We delay gps position for better testing
@@ -409,13 +446,13 @@ void MockLink::_sendHighLatency2()
         static_cast<int32_t>(_vehicleLongitude * 1E7),
         static_cast<int16_t>(_vehicleAltitudeAMSL),
         static_cast<int16_t>(_vehicleAltitudeAMSL),  // target_altitude,
-        0,                          // heading
-        0,                          // target_heading
+        static_cast<uint8_t>(std::round(_headingDegrees / 2.0)), // heading (0..179 => 0..358 deg)
+        static_cast<uint8_t>(std::round(_headingDegrees / 2.0)), // target_heading
         0,                          // target_distance
         0,                          // throttle
         0,                          // airspeed
         0,                          // airspeed_sp
-        0,                          // groundspeed
+        static_cast<uint8_t>(std::round(std::hypot(_velocityNorthMps, _velocityEastMps))), // groundspeed
         0,                          // windspeed,
         0,                          // wind_heading
         UINT8_MAX,                  // eph not known
@@ -452,9 +489,15 @@ void MockLink::_sendSysStatus()
 
 void MockLink::_sendBatteryStatus()
 {
-    if (_battery1PctRemaining > 1) {
-        _battery1PctRemaining = static_cast<int8_t>(100 - (_runningTime.elapsed() / 1000));
-        _battery1TimeRemaining = static_cast<double>(_batteryMaxTimeRemaining) * (static_cast<double>(_battery1PctRemaining) / 100.0);
+    const int32_t elapsedSeconds = static_cast<int32_t>(_runningTime.elapsed() / 1000);
+
+    if (_battery1PctRemaining > 0) {
+        _battery1TimeRemaining = _batteryMaxTimeRemaining - elapsedSeconds;
+        if (_battery1TimeRemaining < 0) {
+            _battery1TimeRemaining = 0;
+        }
+
+        _battery1PctRemaining = static_cast<int8_t>((_battery1TimeRemaining * 100) / _batteryMaxTimeRemaining);
         if (_battery1PctRemaining > 50) {
             _battery1ChargeState = MAV_BATTERY_CHARGE_STATE_OK;
         } else if (_battery1PctRemaining > 30) {
@@ -466,9 +509,13 @@ void MockLink::_sendBatteryStatus()
         }
     }
 
-    if (_battery2PctRemaining > 1) {
-        _battery2PctRemaining = static_cast<int8_t>(100 - ((_runningTime.elapsed() / 1000) / 2));
-        _battery2TimeRemaining = static_cast<double>(_batteryMaxTimeRemaining) * (static_cast<double>(_battery2PctRemaining) / 100.0);
+    if (_battery2PctRemaining > 0) {
+        _battery2TimeRemaining = _batteryMaxTimeRemaining - elapsedSeconds;
+        if (_battery2TimeRemaining < 0) {
+            _battery2TimeRemaining = 0;
+        }
+
+        _battery2PctRemaining = static_cast<int8_t>((_battery2TimeRemaining * 100) / _batteryMaxTimeRemaining);
         if (_battery2PctRemaining > 50) {
             _battery2ChargeState = MAV_BATTERY_CHARGE_STATE_OK;
         } else if (_battery2PctRemaining > 30) {
@@ -634,17 +681,32 @@ void MockLink::_updateIncomingMessageCounts(const mavlink_message_t &msg)
 {
     _receivedMavlinkMessageCountMap[msg.msgid]++;
 
-    // Update command-specific counts if this is a COMMAND_LONG message
-    if (msg.msgid == MAVLINK_MSG_ID_COMMAND_LONG) {
-        mavlink_command_long_t request{};
-        mavlink_msg_command_long_decode(&msg, &request);
+    // Update command-specific counts if this is a command message
+    if ((msg.msgid == MAVLINK_MSG_ID_COMMAND_LONG) || (msg.msgid == MAVLINK_MSG_ID_COMMAND_INT)) {
+        MAV_CMD command;
+        uint8_t targetComponent = 0;
+        float requestMessageId = NAN;
 
-        _receivedMavCommandCountMap[static_cast<MAV_CMD>(request.command)]++;
-        _receivedMavCommandByCompCountMap[static_cast<MAV_CMD>(request.command)][request.target_component]++;
+        if (msg.msgid == MAVLINK_MSG_ID_COMMAND_LONG) {
+            mavlink_command_long_t request{};
+            mavlink_msg_command_long_decode(&msg, &request);
+            command = static_cast<MAV_CMD>(request.command);
+            targetComponent = request.target_component;
+            requestMessageId = request.param1;
+        } else {
+            mavlink_command_int_t request{};
+            mavlink_msg_command_int_decode(&msg, &request);
+            command = static_cast<MAV_CMD>(request.command);
+            targetComponent = request.target_component;
+            requestMessageId = request.param1;
+        }
 
-        if (request.command == MAV_CMD_REQUEST_MESSAGE) {
-            _receivedRequestMessageCountMap[static_cast<uint32_t>(request.param1)]++;
-            _receivedRequestMessageByCompAndMsgCountMap[request.target_component][static_cast<int>(request.param1)]++;
+        _receivedMavCommandCountMap[command]++;
+        _receivedMavCommandByCompCountMap[command][targetComponent]++;
+
+        if (command == MAV_CMD_REQUEST_MESSAGE) {
+            _receivedRequestMessageCountMap[static_cast<uint32_t>(requestMessageId)]++;
+            _receivedRequestMessageByCompAndMsgCountMap[targetComponent][static_cast<int>(requestMessageId)]++;
         }
     }
 }
@@ -687,8 +749,14 @@ void MockLink::_handleIncomingMavlinkMsg(const mavlink_message_t &msg)
     case MAVLINK_MSG_ID_COMMAND_LONG:
         _handleCommandLong(msg);
         break;
+    case MAVLINK_MSG_ID_COMMAND_INT:
+        _handleCommandInt(msg);
+        break;
     case MAVLINK_MSG_ID_MANUAL_CONTROL:
         _handleManualControl(msg);
+        break;
+    case MAVLINK_MSG_ID_SET_POSITION_TARGET_LOCAL_NED:
+        _handleSetPositionTargetLocalNed(msg);
         break;
     case MAVLINK_MSG_ID_LOG_REQUEST_LIST:
         _handleLogRequestList(msg);
@@ -734,7 +802,240 @@ void MockLink::_handleSetMode(const mavlink_message_t &msg)
     Q_ASSERT(request.target_system == _vehicleSystemId);
 
     _mavBaseMode = request.base_mode;
-    _mavCustomMode = request.custom_mode;
+    _applyFlightModeChange(request.custom_mode);
+
+    _sendHeartBeat();
+}
+
+void MockLink::_clearMotionTargets()
+{
+    _targetCoordinate = QGeoCoordinate();
+    _targetCoordinateActive = false;
+    _targetCoordinateIncludesAltitude = false;
+    _targetAltitudeActive = false;
+    _velocityNorthMps = 0.0;
+    _velocityEastMps = 0.0;
+    _velocityDownMps = 0.0;
+}
+
+void MockLink::_setTargetCoordinate(const QGeoCoordinate &coordinate, bool includeAltitude)
+{
+    if (!coordinate.isValid()) {
+        return;
+    }
+
+    _targetCoordinate = coordinate;
+    _targetCoordinateActive = true;
+    _targetCoordinateIncludesAltitude = includeAltitude;
+    if (includeAltitude && !std::isnan(coordinate.altitude())) {
+        _targetAltitudeAMSL = coordinate.altitude();
+        _targetAltitudeActive = true;
+    }
+}
+
+bool MockLink::_handleGuidedMissionItem(const mavlink_mission_item_t &missionItem)
+{
+    if (_firmwareType != MAV_AUTOPILOT_ARDUPILOTMEGA || missionItem.command != MAV_CMD_NAV_WAYPOINT) {
+        return false;
+    }
+
+    if (missionItem.target_system != _vehicleSystemId) {
+        return false;
+    }
+
+    double targetLatitude = missionItem.x;
+    double targetLongitude = missionItem.y;
+
+    if (missionItem.current == 3) {
+        targetLatitude = _vehicleLatitude;
+        targetLongitude = _vehicleLongitude;
+    }
+
+    double targetAltitudeAMSL = missionItem.z;
+    switch (missionItem.frame) {
+    case MAV_FRAME_GLOBAL_RELATIVE_ALT:
+        targetAltitudeAMSL += _defaultVehicleHomeAltitude;
+        break;
+    case MAV_FRAME_GLOBAL:
+        break;
+    default:
+        return false;
+    }
+
+    _mavBaseMode |= MAV_MODE_FLAG_CUSTOM_MODE_ENABLED;
+    _applyFlightModeChange(kApmCopterModeGuided);
+    _setTargetCoordinate(QGeoCoordinate(targetLatitude, targetLongitude, targetAltitudeAMSL), true);
+
+    _sendHeartBeat();
+    _sendGlobalPositionInt();
+    _sendGpsRawInt();
+    _sendHighLatency2();
+
+    return true;
+}
+
+void MockLink::_applyFlightModeChange(uint32_t customMode)
+{
+    _mavCustomMode = customMode;
+
+    if (_firmwareType != MAV_AUTOPILOT_ARDUPILOTMEGA) {
+        return;
+    }
+
+    switch (customMode) {
+    case kApmCopterModeLand:
+    case kApmCopterModeBrake:
+    case kApmCopterModeLoiter:
+    case kApmCopterModeStabilize:
+        _clearMotionTargets();
+        break;
+    case kApmCopterModeRtl:
+    case kApmCopterModeSmartRtl:
+        _targetCoordinate = QGeoCoordinate(_homeLatitude, _homeLongitude, _defaultVehicleHomeAltitude);
+        _targetCoordinateActive = true;
+        _targetCoordinateIncludesAltitude = true;
+        _targetAltitudeAMSL = _defaultVehicleHomeAltitude;
+        _targetAltitudeActive = true;
+        break;
+    default:
+        break;
+    }
+}
+
+void MockLink::_updateSimulatedMotion()
+{
+    if (!_motionUpdateElapsed.isValid()) {
+        _motionUpdateElapsed.start();
+        return;
+    }
+
+    const double deltaTime = qMin(_motionUpdateElapsed.restart() / 1000.0, 0.25);
+    if (deltaTime <= 0.0) {
+        return;
+    }
+
+    const bool armed = (_mavBaseMode & MAV_MODE_FLAG_SAFETY_ARMED) != 0;
+    if (!armed) {
+        _clearMotionTargets();
+        _vehicleAltitudeAMSL = qMax(_vehicleAltitudeAMSL, _defaultVehicleHomeAltitude);
+        if (_vehicleAltitudeAMSL <= (_defaultVehicleHomeAltitude + 0.05)) {
+            _vehicleAltitudeAMSL = _defaultVehicleHomeAltitude;
+        }
+        _mavState = MAV_STATE_STANDBY;
+        return;
+    }
+
+    QGeoCoordinate currentCoordinate(_vehicleLatitude, _vehicleLongitude, _vehicleAltitudeAMSL);
+    bool updatedMotion = false;
+
+    const bool manualControlRecent = _manualControlElapsed.isValid() && (_manualControlElapsed.elapsed() < 750);
+    if (manualControlRecent &&
+        (_mavCustomMode != kApmCopterModeLand) &&
+        (_mavCustomMode != kApmCopterModeRtl) &&
+        (_mavCustomMode != kApmCopterModeSmartRtl)) {
+        const double forwardSpeedMps = qBound(-8.0, 8.0 * (static_cast<double>(_manualControlX) / 1000.0), 8.0);
+        const double rightSpeedMps = qBound(-8.0, 8.0 * (static_cast<double>(_manualControlY) / 1000.0), 8.0);
+        const double climbSpeedMps = qBound(-3.0, 3.0 * ((static_cast<double>(_manualControlZ) - 500.0) / 500.0), 3.0);
+        const double yawRateDegPerSec = qBound(-90.0, 90.0 * (static_cast<double>(_manualControlR) / 1000.0), 90.0);
+        const double headingRadians = _headingDegrees * kDegreesToRadians;
+
+        _headingDegrees = std::fmod(_headingDegrees + (yawRateDegPerSec * deltaTime), 360.0);
+        if (_headingDegrees < 0.0) {
+            _headingDegrees += 360.0;
+        }
+
+        _velocityNorthMps = (forwardSpeedMps * std::cos(headingRadians)) - (rightSpeedMps * std::sin(headingRadians));
+        _velocityEastMps = (forwardSpeedMps * std::sin(headingRadians)) + (rightSpeedMps * std::cos(headingRadians));
+        _velocityDownMps = -climbSpeedMps;
+
+        const double horizontalDistance = std::hypot(_velocityNorthMps, _velocityEastMps) * deltaTime;
+        if (horizontalDistance > 0.0) {
+            const double azimuthDegrees = std::atan2(_velocityEastMps, _velocityNorthMps) * kRadiansToDegrees;
+            currentCoordinate = currentCoordinate.atDistanceAndAzimuth(horizontalDistance, azimuthDegrees);
+        }
+        _vehicleAltitudeAMSL = qMax(_defaultVehicleHomeAltitude, _vehicleAltitudeAMSL + (climbSpeedMps * deltaTime));
+        updatedMotion = true;
+    } else if ((_mavCustomMode == kApmCopterModeLand) ||
+               ((_mavCustomMode == kApmCopterModeRtl) && (currentCoordinate.distanceTo(QGeoCoordinate(_homeLatitude, _homeLongitude)) < 1.0)) ||
+               ((_mavCustomMode == kApmCopterModeSmartRtl) && (currentCoordinate.distanceTo(QGeoCoordinate(_homeLatitude, _homeLongitude)) < 1.0))) {
+        constexpr double descentRateMps = 1.5;
+        _velocityNorthMps = 0.0;
+        _velocityEastMps = 0.0;
+        _velocityDownMps = descentRateMps;
+        _vehicleAltitudeAMSL = qMax(_defaultVehicleHomeAltitude, _vehicleAltitudeAMSL - (descentRateMps * deltaTime));
+        updatedMotion = true;
+
+        if (_vehicleAltitudeAMSL <= (_defaultVehicleHomeAltitude + 0.05)) {
+            _vehicleAltitudeAMSL = _defaultVehicleHomeAltitude;
+            _mavBaseMode &= ~MAV_MODE_FLAG_SAFETY_ARMED;
+            _mavState = MAV_STATE_STANDBY;
+            _clearMotionTargets();
+        }
+    } else {
+        if ((_mavCustomMode == kApmCopterModeRtl) || (_mavCustomMode == kApmCopterModeSmartRtl)) {
+            _targetCoordinate = QGeoCoordinate(_homeLatitude, _homeLongitude, _defaultVehicleHomeAltitude);
+            _targetCoordinateActive = true;
+            _targetCoordinateIncludesAltitude = false;
+            _targetAltitudeAMSL = _vehicleAltitudeAMSL;
+            _targetAltitudeActive = false;
+        }
+
+        if (_targetCoordinateActive || _targetAltitudeActive) {
+            constexpr double horizontalSpeedMps = 5.0;
+            constexpr double verticalSpeedMps = 2.0;
+            const QGeoCoordinate destination = _targetCoordinateActive ? _targetCoordinate : currentCoordinate;
+            const double distanceToTarget = _targetCoordinateActive ? currentCoordinate.distanceTo(destination) : 0.0;
+
+            if (_targetCoordinateActive && (distanceToTarget > 0.15)) {
+                const double azimuthDegrees = currentCoordinate.azimuthTo(destination);
+                const double travelDistance = qMin(distanceToTarget, _guidedGroundspeedMps > 0.0 ? _guidedGroundspeedMps * deltaTime : horizontalSpeedMps * deltaTime);
+                currentCoordinate = currentCoordinate.atDistanceAndAzimuth(travelDistance, azimuthDegrees);
+                const double azimuthRadians = azimuthDegrees * kDegreesToRadians;
+                _velocityNorthMps = (travelDistance / deltaTime) * std::cos(azimuthRadians);
+                _velocityEastMps = (travelDistance / deltaTime) * std::sin(azimuthRadians);
+                _headingDegrees = azimuthDegrees;
+                updatedMotion = true;
+            } else {
+                _velocityNorthMps = 0.0;
+                _velocityEastMps = 0.0;
+                _vehicleLatitude = destination.latitude();
+                _vehicleLongitude = destination.longitude();
+                _targetCoordinateActive = false;
+            }
+
+            if (_targetAltitudeActive) {
+                const double altitudeError = _targetAltitudeAMSL - _vehicleAltitudeAMSL;
+                if (std::abs(altitudeError) > 0.05) {
+                    const double climbStep = qMin(std::abs(altitudeError), verticalSpeedMps * deltaTime);
+                    const double climbSpeed = std::copysign(climbStep / deltaTime, altitudeError);
+                    _vehicleAltitudeAMSL += climbSpeed * deltaTime;
+                    _velocityDownMps = -climbSpeed;
+                    updatedMotion = true;
+                } else {
+                    _vehicleAltitudeAMSL = _targetAltitudeAMSL;
+                    _velocityDownMps = 0.0;
+                    _targetAltitudeActive = false;
+                }
+            } else {
+                _velocityDownMps = 0.0;
+            }
+        } else {
+            _velocityNorthMps = 0.0;
+            _velocityEastMps = 0.0;
+            _velocityDownMps = 0.0;
+        }
+    }
+
+    if (updatedMotion) {
+        _vehicleLatitude = currentCoordinate.latitude();
+        _vehicleLongitude = currentCoordinate.longitude();
+    }
+
+    if (_vehicleAltitudeAMSL < _defaultVehicleHomeAltitude) {
+        _vehicleAltitudeAMSL = _defaultVehicleHomeAltitude;
+    }
+
+    _mavState = (_vehicleAltitudeAMSL > (_defaultVehicleHomeAltitude + 0.1)) ? MAV_STATE_ACTIVE : MAV_STATE_STANDBY;
 }
 
 void MockLink::_handleManualControl(const mavlink_message_t &msg)
@@ -742,7 +1043,41 @@ void MockLink::_handleManualControl(const mavlink_message_t &msg)
     mavlink_manual_control_t manualControl{};
     mavlink_msg_manual_control_decode(&msg, &manualControl);
 
+    _manualControlX = manualControl.x;
+    _manualControlY = manualControl.y;
+    _manualControlZ = manualControl.z;
+    _manualControlR = manualControl.r;
+    _manualControlElapsed.start();
+
     qCDebug(MockLinkLog) << "MANUAL_CONTROL" << manualControl.x << manualControl.y << manualControl.z << manualControl.r;
+}
+
+void MockLink::_handleSetPositionTargetLocalNed(const mavlink_message_t &msg)
+{
+    mavlink_set_position_target_local_ned_t request{};
+    mavlink_msg_set_position_target_local_ned_decode(&msg, &request);
+
+    Q_ASSERT(request.target_system == _vehicleSystemId);
+
+    if ((request.coordinate_frame != MAV_FRAME_LOCAL_OFFSET_NED) &&
+        (request.coordinate_frame != MAV_FRAME_LOCAL_NED)) {
+        return;
+    }
+
+    QGeoCoordinate coordinate(_vehicleLatitude, _vehicleLongitude, _vehicleAltitudeAMSL);
+    const double horizontalDistance = std::hypot(request.x, request.y);
+    if (horizontalDistance > 0.0) {
+        const double azimuthDegrees = std::atan2(request.y, request.x) * kRadiansToDegrees;
+        coordinate = coordinate.atDistanceAndAzimuth(horizontalDistance, azimuthDegrees);
+        _setTargetCoordinate(QGeoCoordinate(coordinate.latitude(), coordinate.longitude(), _vehicleAltitudeAMSL), false);
+    }
+
+    _targetAltitudeAMSL = qMax(_defaultVehicleHomeAltitude, _vehicleAltitudeAMSL - request.z);
+    _targetAltitudeActive = true;
+    if (!_targetCoordinateActive) {
+        _velocityNorthMps = 0.0;
+        _velocityEastMps = 0.0;
+    }
 }
 
 void MockLink::_setParamFloatUnionIntoMap(int componentId, const QString &paramName, float paramFloat)
@@ -1231,7 +1566,50 @@ void MockLink::_handleInProgressCommandLong(const mavlink_command_long_t &reques
 void MockLink::_handleCommandLongSetMessageInterval(const mavlink_command_long_t &request, bool &accepted)
 {
     Q_UNUSED(request);
-    accepted = false;
+    accepted = true;
+}
+
+void MockLink::_handleCommandInt(const mavlink_message_t &msg)
+{
+    mavlink_command_int_t request{};
+    mavlink_msg_command_int_decode(&msg, &request);
+
+    uint8_t commandResult = MAV_RESULT_UNSUPPORTED;
+
+    switch (request.command) {
+    case MAV_CMD_DO_REPOSITION:
+        _setTargetCoordinate(QGeoCoordinate(static_cast<double>(request.x) / 1e7,
+                                            static_cast<double>(request.y) / 1e7,
+                                            request.z),
+                             true);
+
+        if ((_firmwareType == MAV_AUTOPILOT_ARDUPILOTMEGA) &&
+            ((static_cast<uint32_t>(request.param2) & MAV_DO_REPOSITION_FLAGS_CHANGE_MODE) != 0U)) {
+            _mavBaseMode |= MAV_MODE_FLAG_CUSTOM_MODE_ENABLED;
+            _applyFlightModeChange(kApmCopterModeGuided);
+        }
+        commandResult = MAV_RESULT_ACCEPTED;
+        break;
+    case MAV_CMD_DO_SET_ROI_LOCATION:
+    case MAV_CMD_DO_SET_ROI_NONE:
+        commandResult = MAV_RESULT_ACCEPTED;
+        break;
+    }
+
+    mavlink_message_t commandAck{};
+    (void) mavlink_msg_command_ack_pack_chan(
+        _vehicleSystemId,
+        _vehicleComponentId,
+        mavlinkChannel(),
+        &commandAck,
+        request.command,
+        commandResult,
+        0,    // progress
+        0,    // result_param2
+        0,    // target_system
+        0     // target_component
+    );
+    respondWithMavlinkMessage(commandAck);
 }
 
 void MockLink::_handleCommandLong(const mavlink_message_t &msg)
@@ -1248,11 +1626,24 @@ void MockLink::_handleCommandLong(const mavlink_message_t &msg)
     case MAV_CMD_COMPONENT_ARM_DISARM:
         if (request.param1 == 0.0f) {
             _mavBaseMode &= ~MAV_MODE_FLAG_SAFETY_ARMED;
+            _mavState = MAV_STATE_STANDBY;
+            _clearMotionTargets();
         } else {
             _mavBaseMode |= MAV_MODE_FLAG_SAFETY_ARMED;
+            _mavState = MAV_STATE_ACTIVE;
         }
+        _sendHeartBeat();
         commandResult = MAV_RESULT_ACCEPTED;
         break;
+    case MAV_CMD_DO_SET_MODE:
+    {
+        const uint8_t preservedBaseMode = _mavBaseMode & MAV_MODE_FLAG_SAFETY_ARMED;
+        _mavBaseMode = preservedBaseMode | static_cast<uint8_t>(request.param1) | MAV_MODE_FLAG_CUSTOM_MODE_ENABLED;
+        _applyFlightModeChange(static_cast<uint32_t>(request.param2));
+        _sendHeartBeat();
+        commandResult = MAV_RESULT_ACCEPTED;
+        break;
+    }
     case MAV_CMD_PREFLIGHT_CALIBRATION:
         _handlePreFlightCalibration(request);
         commandResult = MAV_RESULT_ACCEPTED;
@@ -1292,6 +1683,46 @@ void MockLink::_handleCommandLong(const mavlink_message_t &msg)
     }
     case MAV_CMD_NAV_TAKEOFF:
         _handleTakeoff(request);
+        _sendHeartBeat();
+        commandResult = MAV_RESULT_ACCEPTED;
+        break;
+    case MAV_CMD_NAV_RETURN_TO_LAUNCH:
+        _applyFlightModeChange(kApmCopterModeRtl);
+        _sendHeartBeat();
+        commandResult = MAV_RESULT_ACCEPTED;
+        break;
+    case MAV_CMD_NAV_LAND:
+        _applyFlightModeChange(kApmCopterModeLand);
+        _sendHeartBeat();
+        commandResult = MAV_RESULT_ACCEPTED;
+        break;
+    case MAV_CMD_MISSION_START:
+        _applyFlightModeChange(kApmCopterModeAuto);
+        _sendHeartBeat();
+        commandResult = MAV_RESULT_ACCEPTED;
+        break;
+    case MAV_CMD_DO_CHANGE_SPEED:
+        if (request.param2 > 0.0f) {
+            _guidedGroundspeedMps = request.param2;
+        }
+        commandResult = MAV_RESULT_ACCEPTED;
+        break;
+    case MAV_CMD_CONDITION_YAW:
+    {
+        if (request.param4 != 0.0f) {
+            _headingDegrees += request.param1 * ((request.param3 >= 0.0f) ? 1.0f : -1.0f);
+        } else {
+            _headingDegrees = request.param1;
+        }
+        _headingDegrees = std::fmod(_headingDegrees, 360.0);
+        if (_headingDegrees < 0.0) {
+            _headingDegrees += 360.0;
+        }
+        commandResult = MAV_RESULT_ACCEPTED;
+        break;
+    }
+    case MAV_CMD_DO_SET_ROI_LOCATION:
+    case MAV_CMD_DO_SET_ROI_NONE:
         commandResult = MAV_RESULT_ACCEPTED;
         break;
     case MAV_CMD_MOCKLINK_ALWAYS_RESULT_ACCEPTED:
@@ -1450,8 +1881,8 @@ void MockLink::_sendHomePosition()
         _vehicleComponentId,
         mavlinkChannel(),
         &msg,
-        static_cast<int32_t>(_vehicleLatitude * 1E7),
-        static_cast<int32_t>(_vehicleLongitude * 1E7),
+        static_cast<int32_t>(_homeLatitude * 1E7),
+        static_cast<int32_t>(_homeLongitude * 1E7),
         static_cast<int32_t>(_defaultVehicleHomeAltitude * 1000),
         0.0f, 0.0f, 0.0f,
         &bogus[0],
@@ -1464,6 +1895,9 @@ void MockLink::_sendHomePosition()
 void MockLink::_sendGpsRawInt()
 {
     static uint64_t timeTick = 0;
+    const double groundSpeedMps = std::hypot(_velocityNorthMps, _velocityEastMps);
+    const double courseOverGround = std::atan2(_velocityEastMps, _velocityNorthMps) * kRadiansToDegrees;
+    const uint16_t cogCentiDegrees = (groundSpeedMps > 0.01) ? static_cast<uint16_t>(std::round(std::fmod(courseOverGround + 360.0, 360.0) * 100.0)) : UINT16_MAX;
 
     mavlink_message_t msg{};
     (void) mavlink_msg_gps_raw_int_pack_chan(
@@ -1478,8 +1912,8 @@ void MockLink::_sendGpsRawInt()
         static_cast<int32_t>(_vehicleAltitudeAMSL * 1000),
         3 * 100,                                // hdop
         3 * 100,                                // vdop
-        UINT16_MAX,                             // velocity not known
-        UINT16_MAX,                             // course over ground not known
+        static_cast<uint16_t>(std::round(groundSpeedMps * 100.0)),
+        cogCentiDegrees,
         8,                                      // satellites visible
         //-- Extension
         0,                                      // Altitude (above WGS84, EGM96 ellipsoid), in meters * 1000 (positive for up).
@@ -1507,8 +1941,10 @@ void MockLink::_sendGlobalPositionInt()
         static_cast<int32_t>(_vehicleLongitude * 1E7),
         static_cast<int32_t>(_vehicleAltitudeAMSL * 1000),
         static_cast<int32_t>((_vehicleAltitudeAMSL - _defaultVehicleHomeAltitude) * 1000),
-        0, 0, 0,    // no speed sent
-        UINT16_MAX  // no heading sent
+        static_cast<int16_t>(std::round(_velocityNorthMps * 100.0)),
+        static_cast<int16_t>(std::round(_velocityEastMps * 100.0)),
+        static_cast<int16_t>(std::round(_velocityDownMps * 100.0)),
+        static_cast<uint16_t>(std::round(std::fmod(_headingDegrees + 360.0, 360.0) * 100.0))
     );
     respondWithMavlinkMessage(msg);
 }
@@ -1522,7 +1958,7 @@ void MockLink::_sendExtendedSysState()
         mavlinkChannel(),
         &msg,
         MAV_VTOL_STATE_UNDEFINED,
-        (_vehicleAltitudeAMSL > _defaultVehicleHomeAltitude) ? MAV_LANDED_STATE_IN_AIR : MAV_LANDED_STATE_ON_GROUND
+        (((_mavBaseMode & MAV_MODE_FLAG_SAFETY_ARMED) != 0) && (_vehicleAltitudeAMSL > (_defaultVehicleHomeAltitude + 0.05))) ? MAV_LANDED_STATE_IN_AIR : MAV_LANDED_STATE_ON_GROUND
     );
     respondWithMavlinkMessage(msg);
 }
@@ -1727,8 +2163,14 @@ void MockLink::_handlePreFlightCalibration(const mavlink_command_long_t& request
 
 void MockLink::_handleTakeoff(const mavlink_command_long_t &request)
 {
-    _vehicleAltitudeAMSL = request.param7 + _defaultVehicleHomeAltitude;
     _mavBaseMode |= MAV_MODE_FLAG_SAFETY_ARMED;
+    if (_firmwareType == MAV_AUTOPILOT_ARDUPILOTMEGA) {
+        _applyFlightModeChange(kApmCopterModeGuided);
+    }
+    _targetAltitudeAMSL = qMax(_defaultVehicleHomeAltitude, request.param7 + _defaultVehicleHomeAltitude);
+    _targetAltitudeActive = true;
+    _mavState = MAV_STATE_ACTIVE;
+    _manualControlElapsed.invalidate();
 }
 
 void MockLink::_handleLogRequestList(const mavlink_message_t &msg)
@@ -1950,6 +2392,11 @@ void MockLink::_handleRequestMessageDebug(const mavlink_command_long_t &/*reques
 
 void MockLink::_handleRequestMessageAvailableModes(const mavlink_command_long_t &request, bool &accepted)
 {
+    if (_firmwareType != MAV_AUTOPILOT_PX4) {
+        accepted = false;
+        return;
+    }
+
     accepted = true;
 
     // Thread-safe access: Check-then-set pattern must be atomic. Worker increments index every 2ms,

@@ -26,7 +26,14 @@ set(deploy_tool_options_arg "")
 set(deploy_include_plugins "")
 
 if(MACOS OR WIN32)
-    list(APPEND deploy_tool_options_arg "-qmldir=${CMAKE_SOURCE_DIR}")
+    # Limit Qt deployment scanning to actual QML source trees.
+    list(APPEND deploy_tool_options_arg "-qmldir=${CMAKE_SOURCE_DIR}/src")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/custom/src")
+        list(APPEND deploy_tool_options_arg "-qmldir=${CMAKE_SOURCE_DIR}/custom/src")
+    endif()
+    if(WIN32)
+        list(APPEND deploy_tool_options_arg "--qmlimporttimeout=120000")
+    endif()
     if(MACOS)
         list(APPEND deploy_tool_options_arg "-appstore-compliant")
     endif()
@@ -112,22 +119,26 @@ elseif(LINUX)
 # Windows Installation & Installer Creation
 # ----------------------------------------------------------------------------
 elseif(WIN32)
-    # Pass variables to Windows installer creation script
-    if(CMAKE_CROSSCOMPILING)
-        set(_win_installer_out "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}-installer-${CMAKE_HOST_SYSTEM_PROCESSOR}-${CMAKE_SYSTEM_PROCESSOR}.exe")
+    if(QGC_BUILD_INSTALLER)
+        # Pass variables to Windows installer creation script
+        if(CMAKE_CROSSCOMPILING)
+            set(_win_installer_out "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}-installer-${CMAKE_HOST_SYSTEM_PROCESSOR}-${CMAKE_SYSTEM_PROCESSOR}.exe")
+        else()
+            set(_win_installer_out "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}-installer-${CMAKE_SYSTEM_PROCESSOR}.exe")
+        endif()
+        install(CODE "
+            set(CMAKE_PROJECT_NAME \"${CMAKE_PROJECT_NAME}\")
+            set(CMAKE_PROJECT_VERSION \"${CMAKE_PROJECT_VERSION}\")
+            set(QGC_ORG_NAME \"${QGC_ORG_NAME}\")
+            set(QGC_WINDOWS_ICON_PATH \"${QGC_WINDOWS_ICON_PATH}\")
+            set(QGC_WINDOWS_INSTALL_HEADER_PATH \"${QGC_WINDOWS_INSTALL_HEADER_PATH}\")
+            set(QGC_WINDOWS_OUT \"${_win_installer_out}\")
+            set(QGC_WINDOWS_INSTALLER_SCRIPT \"${CMAKE_SOURCE_DIR}/deploy/windows/nullsoft_installer.nsi\")
+        ")
+        install(SCRIPT "${CMAKE_SOURCE_DIR}/cmake/install/CreateWinInstaller.cmake")
     else()
-        set(_win_installer_out "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}-installer-${CMAKE_SYSTEM_PROCESSOR}.exe")
+        message(STATUS "QGC: Windows installer packaging disabled; install output will remain in ${CMAKE_INSTALL_PREFIX}")
     endif()
-    install(CODE "
-        set(CMAKE_PROJECT_NAME \"${CMAKE_PROJECT_NAME}\")
-        set(CMAKE_PROJECT_VERSION \"${CMAKE_PROJECT_VERSION}\")
-        set(QGC_ORG_NAME \"${QGC_ORG_NAME}\")
-        set(QGC_WINDOWS_ICON_PATH \"${QGC_WINDOWS_ICON_PATH}\")
-        set(QGC_WINDOWS_INSTALL_HEADER_PATH \"${QGC_WINDOWS_INSTALL_HEADER_PATH}\")
-        set(QGC_WINDOWS_OUT \"${_win_installer_out}\")
-        set(QGC_WINDOWS_INSTALLER_SCRIPT \"${CMAKE_SOURCE_DIR}/deploy/windows/nullsoft_installer.nsi\")
-    ")
-    install(SCRIPT "${CMAKE_SOURCE_DIR}/cmake/install/CreateWinInstaller.cmake")
 
 # ----------------------------------------------------------------------------
 # macOS Installation, Code Signing & DMG Creation

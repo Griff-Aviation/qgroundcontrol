@@ -40,6 +40,9 @@
 #include "Vehicle.h"
 #include "VehicleComponent.h"
 #include "VideoManager.h"
+#ifdef QT_DEBUG
+#include "MockLink.h"
+#endif
 
 #ifndef QGC_NO_SERIAL_LINK
 #include "SerialLink.h"
@@ -47,12 +50,29 @@
 
 QGC_LOGGING_CATEGORY(QGCApplicationLog, "API.QGCApplication")
 
+#ifdef QT_DEBUG
+static bool _hasConnectedMockLink()
+{
+    const QList<SharedLinkInterfacePtr> links = LinkManager::instance()->links();
+
+    for (const SharedLinkInterfacePtr &link : links) {
+        const SharedLinkConfigurationPtr linkConfig = link->linkConfiguration();
+        if (linkConfig && (linkConfig->type() == LinkConfiguration::TypeMock)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+#endif
+
 QGCApplication::QGCApplication(int &argc, char *argv[], const QGCCommandLineParser::CommandLineParseResult &cli)
     : QApplication(argc, argv)
     , _runningUnitTests(cli.runningUnitTests)
     , _simpleBootTest(cli.simpleBootTest)
     , _fakeMobile(cli.fakeMobile)
     , _logOutput(cli.logOutput)
+    , _autoStartMockLink(cli.autoStartMockLink)
     , _systemId(cli.systemId.value_or(0))
 {
     _msecsElapsedTime.start();
@@ -321,6 +341,13 @@ void QGCApplication::_initForNormalAppBoot()
 
     // Connect links with flag AutoconnectLink
     LinkManager::instance()->startAutoConnectedLinks();
+
+#ifdef QT_DEBUG
+    if (_autoStartMockLink && !_hasConnectedMockLink()) {
+        qCDebug(QGCApplicationLog) << "Starting default APM ArduCopter MockLink on application startup";
+        (void) MockLink::startAPMArduCopterMockLink(false, false, false);
+    }
+#endif
 }
 
 void QGCApplication::deleteAllSettingsNextBoot()

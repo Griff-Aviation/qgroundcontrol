@@ -13,12 +13,17 @@ QGC_LOGGING_CATEGORY(OsmParserLog, "Viewer3d.OsmParser")
 
 OsmParser::OsmParser(QObject *parent)
     : Viewer3DMapProvider{parent}
-    , _osmParserWorker(new OsmParserThread(this))
+    , _osmParserWorker(new OsmParserThread())
 {
     Viewer3DSettings* viewer3DSettings = SettingsManager::instance()->viewer3DSettings();
     _setBuildingLevelHeight(viewer3DSettings->buildingLevelHeight()->rawValue());
     connect(viewer3DSettings->buildingLevelHeight(), &Fact::rawValueChanged, this, &OsmParser::_setBuildingLevelHeight);
     connect(_osmParserWorker, &OsmParserThread::fileParsed, this, &OsmParser::_onOsmParserFinished);
+}
+
+OsmParser::~OsmParser()
+{
+    delete _osmParserWorker;
 }
 
 void OsmParser::setGpsRef(const QGeoCoordinate &gpsRef)

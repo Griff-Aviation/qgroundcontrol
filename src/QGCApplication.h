@@ -137,6 +137,7 @@ private:
     bool _simpleBootTest = false;
     bool _fakeMobile = false;    ///< true: Fake ui into displaying mobile interface
     bool _logOutput = false;    ///< true: Log Qt debug output to file
+    bool _autoStartMockLink = false;
     quint8 _systemId = 0; ///< MAVLink system ID, 0 means not set
 
     static constexpr int _missingParamsDelayedDisplayTimerTimeout = 1000;   ///< Timeout to wait for next missing fact to come in before display

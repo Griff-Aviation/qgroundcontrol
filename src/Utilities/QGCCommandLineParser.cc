@@ -28,6 +28,7 @@ constexpr QLatin1StringView kOptSimpleBoot    = QLatin1StringView("simple-boot-t
 // --- Desktop-only options ---
 constexpr QLatin1StringView kOptFakeMobile    = QLatin1StringView("fake-mobile");
 constexpr QLatin1StringView kOptAllowMultiple = QLatin1StringView("allow-multiple");
+constexpr QLatin1StringView kOptMockLink      = QLatin1StringView("mocklink");
 #endif
 
 #ifdef QGC_UNITTEST_BUILD
@@ -194,6 +195,11 @@ CommandLineParseResult parseCommandLine()
         QString(kOptAllowMultiple),
         QCoreApplication::translate("main", "Bypass single-instance guard."));
     (void) parser.addOption(allowMultipleOpt);
+
+    const QCommandLineOption mockLinkOpt(
+        QString(kOptMockLink),
+        QCoreApplication::translate("main", "Auto-start the debug ArduPilot multirotor MockLink."));
+    (void) parser.addOption(mockLinkOpt);
 #endif
 
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
@@ -243,10 +249,11 @@ CommandLineParseResult parseCommandLine()
 #if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
         // Mobile platforms don't support desktop options
         if (out.unknownOptions.contains(QLatin1String("fake-mobile")) ||
-            out.unknownOptions.contains(QLatin1String("allow-multiple"))) {
+            out.unknownOptions.contains(QLatin1String("allow-multiple")) ||
+            out.unknownOptions.contains(QLatin1String("mocklink"))) {
             out.statusCode = CommandLineParseResult::Status::Error;
             out.errorString = QCoreApplication::translate("main",
-                "--fake-mobile/--allow-multiple are not supported on mobile platforms.");
+                "--fake-mobile/--allow-multiple/--mocklink are not supported on mobile platforms.");
             qCWarning(QGCCommandLineParserLog) << out.errorString.value();
             return out;
         }
@@ -386,9 +393,11 @@ CommandLineParseResult parseCommandLine()
 #if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS)
     out.fakeMobile = parser.isSet(fakeMobileOpt);
     out.allowMultiple = parser.isSet(allowMultipleOpt);
+    out.autoStartMockLink = parser.isSet(mockLinkOpt);
 #else
     out.fakeMobile = false;
     out.allowMultiple = false;
+    out.autoStartMockLink = false;
 #endif
 
     // --- Parse graphics options ---

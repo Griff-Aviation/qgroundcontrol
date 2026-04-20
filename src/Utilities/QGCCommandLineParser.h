@@ -53,6 +53,7 @@ struct CommandLineParseResult
     // --- Desktop options (not on Android/iOS) ---
     bool fakeMobile = false;
     bool allowMultiple = false;
+    bool autoStartMockLink = false;
 
     // --- Graphics options ---
     bool useDesktopGL = false;      ///< Windows only: Force Desktop OpenGL

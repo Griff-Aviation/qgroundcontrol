@@ -76,6 +76,7 @@ private:
     void _handleMissionRequestList(const mavlink_message_t &msg);
     void _handleMissionRequest(const mavlink_message_t &msg);
     void _handleMissionItem(const mavlink_message_t &msg);
+    void _handleLegacyMissionItem(const mavlink_message_t &msg);
     void _handleMissionCount(const mavlink_message_t &msg);
     void _handleMissionClearAll(const mavlink_message_t &msg);
     void _requestNextMissionItem(int sequenceNumber);

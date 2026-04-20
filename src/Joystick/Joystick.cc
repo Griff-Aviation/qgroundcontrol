@@ -82,28 +82,28 @@ Joystick::Joystick(const QString &name, int axisCount, int buttonCount, int hatC
             _joystickSettings.moveToThread(guiThread);
         }
 
-        const auto ensureFactThread = [guiThread](Fact *fact) {
-            if (fact && fact->thread() != guiThread) {
-                fact->moveToThread(guiThread);
-            }
+        const auto initializeFact = [](Fact *fact) {
+            Q_UNUSED(fact);
         };
 
-        ensureFactThread(_joystickSettings.calibrated());
-        ensureFactThread(_joystickSettings.circleCorrection());
-        ensureFactThread(_joystickSettings.useDeadband());
-        ensureFactThread(_joystickSettings.negativeThrust());
-        ensureFactThread(_joystickSettings.throttleSmoothing());
-        ensureFactThread(_joystickSettings.axisFrequencyHz());
-        ensureFactThread(_joystickSettings.buttonFrequencyHz());
-        ensureFactThread(_joystickSettings.throttleModeCenterZero());
-        ensureFactThread(_joystickSettings.transmitterMode());
-        ensureFactThread(_joystickSettings.exponentialPct());
-        ensureFactThread(_joystickSettings.enableManualControlAux1());
-        ensureFactThread(_joystickSettings.enableManualControlAux2());
-        ensureFactThread(_joystickSettings.enableManualControlAux3());
-        ensureFactThread(_joystickSettings.enableManualControlAux4());
-        ensureFactThread(_joystickSettings.enableManualControlAux5());
-        ensureFactThread(_joystickSettings.enableManualControlAux6());
+        // Create the settings Facts after moving the SettingsGroup so they
+        // inherit the correct GUI-thread affinity from their parent.
+        initializeFact(_joystickSettings.calibrated());
+        initializeFact(_joystickSettings.circleCorrection());
+        initializeFact(_joystickSettings.useDeadband());
+        initializeFact(_joystickSettings.negativeThrust());
+        initializeFact(_joystickSettings.throttleSmoothing());
+        initializeFact(_joystickSettings.axisFrequencyHz());
+        initializeFact(_joystickSettings.buttonFrequencyHz());
+        initializeFact(_joystickSettings.throttleModeCenterZero());
+        initializeFact(_joystickSettings.transmitterMode());
+        initializeFact(_joystickSettings.exponentialPct());
+        initializeFact(_joystickSettings.enableManualControlAux1());
+        initializeFact(_joystickSettings.enableManualControlAux2());
+        initializeFact(_joystickSettings.enableManualControlAux3());
+        initializeFact(_joystickSettings.enableManualControlAux4());
+        initializeFact(_joystickSettings.enableManualControlAux5());
+        initializeFact(_joystickSettings.enableManualControlAux6());
     }
 
     // Changes to manual control extension settings require re-calibration
