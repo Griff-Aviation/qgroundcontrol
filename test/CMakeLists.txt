@@ -295,3 +295,12 @@ add_qgc_test(RequestMetaDataTypeStateMachineTest LABELS Integration Vehicle RESO
 add_qgc_test(SendMavCommandWithHandlerTest LABELS Integration Vehicle RESOURCE_LOCK MockLink)
 add_qgc_test(SendMavCommandWithSignallingTest LABELS Integration Vehicle RESOURCE_LOCK MockLink)
 add_qgc_test(VehicleLinkManagerTest LABELS Integration Vehicle RESOURCE_LOCK MockLink)
+
+# qgroundcontrol_plugins dashboard test overlay begin
+if(QGC_CUSTOM_BUILD)
+    add_qgc_test(CustomDashboardStateTest LABELS Unit Utilities Vehicle)
+    add_qgc_test(ChecklistGatesArming LABELS Unit Utilities Vehicle)
+    add_qgc_test(JoystickActionCatalogTest LABELS Unit Utilities)
+    add_qgc_test(JoystickProfileControllerTest LABELS Unit Utilities)
+endif()
+# qgroundcontrol_plugins dashboard test overlay end

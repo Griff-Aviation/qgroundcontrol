@@ -28,3 +28,19 @@ qt_add_resources(${CMAKE_PROJECT_NAME} "UtilitiesTest_res"
     FILES
         arducopter.apj
 )
+
+# qgroundcontrol_plugins dashboard test overlay begin
+if(QGC_CUSTOM_BUILD)
+    target_sources(${CMAKE_PROJECT_NAME}
+        PRIVATE
+            CustomDashboardStateTest.cc
+            CustomDashboardStateTest.h
+            ChecklistGatesArming.cc
+            ChecklistGatesArming.h
+            JoystickActionCatalogTest.cc
+            JoystickActionCatalogTest.h
+            JoystickProfileControllerTest.cc
+            JoystickProfileControllerTest.h
+    )
+endif()
+# qgroundcontrol_plugins dashboard test overlay end

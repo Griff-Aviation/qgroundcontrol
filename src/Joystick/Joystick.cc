@@ -1641,6 +1641,11 @@ void Joystick::stopConfiguration()
     _stopPollingForConfiguration();
 }
 
+void Joystick::refreshAssignableActions()
+{
+    _buildAvailableButtonsActionList(MultiVehicleManager::instance()->activeVehicle());
+}
+
 Joystick::AxisFunction_t Joystick::_getAxisFunctionForJoystickAxis(int joystickAxis) const
 {
     if (!_validAxis(joystickAxis)) {

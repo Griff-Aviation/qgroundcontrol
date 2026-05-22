@@ -324,6 +324,7 @@ public:
 
     Q_INVOKABLE void startConfiguration(); ///< Tells the joystick that the configuration UI is being displayed so it can do any special processing required
     Q_INVOKABLE void stopConfiguration(); ///< Tells the joystick that the configuration UI is being closed so it can do any special processing required
+    Q_INVOKABLE void refreshAssignableActions(); ///< Rebuilds button actions against the current active vehicle state
 
     void stop();
 
